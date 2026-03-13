@@ -1,0 +1,146 @@
+#
+# Minimal config for the 2 supported workflows:
+# 1) Single-date classification (steps 1->5)
+# 2) Two-dates comparison (time_series mode) -> change_detection rasters -> pixel vitality classes
+#
+# Notes:
+# - `directories.base_output_dir` is auto-set from the filename by the pipeline/CLI:
+#     <config_directory>/<config_stem>
+# - In `--mode time_series`, the CLI overwrites `sentinel_aws.time_range` for current/previous windows,
+#   so the `time_range` here is only a placeholder / fallback.
+#
+
+directories:
+  # Leave base_output_dir empty to auto-derive from config filename.
+  # It will become: <config_directory>/bayernwerk_kmeans_100km
+  base_output_dir: ""
+  raw_data: raw_data
+  processed_data: processed_data
+  asset_preparation: asset_preparation
+  segmentation: segmentation
+  predictions: predictions
+  logs: logs
+
+input:
+  # Path to AOI (GeoJSON/GPKG) OR a known AOI identifier your environment can resolve.
+  aoi: prediction_ready_aoi.bayernwerk_eon_one_100
+  buffer_distance: 200
+  segment_length: 50
+
+sentinel_aws:
+  # Placeholder; overwritten in time_series mode via --time-series-date / --time-series-window-days.
+  time_range: 2025-05-01/2025-05-30
+  # B05 and B06 are required for tree clustering (red edge bands for species discrimination)
+  bands: [B02, B03, B04, B05, B06, B08, B11, B12]
+  max_cloud_cover: 10
+  pick_lowest_cloud: true
+  clip_to_aoi: true
+
+processing:
+  # You can override these via CLI flags like --overwrite-cache (sets redo+clear_cache true).
+  redo: false
+  clear_cache: false
+
+  # Performance / tiling
+  tile_size: 512
+  overlap: 0.1
+  num_workers: 14
+
+  # Segmentation defaults (NDVI split k-means)
+  kmeans:
+    # num_classes: 8  # COMMENTED OUT to enable NDVI-split dual K-means
+    # When num_classes is set, single global K-means is used (ignores high/low_ndvi_clusters).
+    # When num_classes is NOT set, NDVI-split dual K-means is used:
+    #   - Low NDVI (≤ ndvi_threshold): low_ndvi_clusters classes
+    #   - High NDVI (> ndvi_threshold): high_ndvi_clusters classes
+    # Bands for clustering: default [B04, B08] (NDVI-like). For tree vs grassland/agriculture
+    # use red-edge (B05, B06) and SWIR (B11, B12) as well, e.g.:
+    # feature_bands: [B04, B08, B05, B06, B11, B12]
+    high_ndvi_clusters: 30
+    low_ndvi_clusters: 5
+    ndvi_threshold: 0.2
+    sample_fraction: 0.1
+    
+    # Advanced tree clustering for vitality (Mixture of Experts)
+    # Applied to clipped tree rasters from change detection (SECOND K-means, on tree pixels only)
+    tree_clustering:
+      num_classes: 8        # Number of clusters for tree clustering (the SECOND K-means)
+      use_pca: true          # Apply PCA dimensionality reduction (recommended)
+      pca_components: 3     # Reduce to 3 components (removes noise)
+      use_hdbscan: false    # Use HDBSCAN instead of K-Means (set to false to use K-Means with num_classes)
+      hdbscan_min_cluster_size: 600   # Minimum cluster size for HDBSCAN (200-500 recommended, ~0.05% of data)
+      hdbscan_min_samples: 15   # Density threshold (10-20 recommended, lower = less picky, allows clusters to expand)
+      hdbscan_cluster_selection_epsilon: 0.05   # Merge threshold (0.01-0.1, prevents "one giant glob" by forcing separation)
+      hdbscan_cluster_selection_method: 'leaf'   # 'leaf' avoids excess-of-mass problem that favors one massive cluster
+
+  # Zonal stats (keep minimal; defaults apply if omitted)
+  # Band selection rationale:
+  # - Urban: B11, B12 (SWIR) - positions 7, 8
+  # - Trees vs. Grass: B05, B06 (Red Edge) - positions 4, 5
+  # - General Veg: B04 (Red), B08 (NIR) - positions 3, 6
+  # - Shadows/Water: B02 (Blue) - position 1
+  zonal_stats_optimization:
+    band_whitelist: [1, 2, 3, 4, 5, 6, 7, 8]  # B02, B03, B04, B05, B06, B08, B11, B12
+    ops: [mean]
+  
+  # Geo embedding: H3 cell IDs for location-aware training (dual resolution)
+  # H3 is a global hexagonal spatial indexing system that encodes location proximity.
+  # The pipeline automatically computes TWO H3 columns:
+  #   - h3_cell_id_regional (resolution 3): Larger cells for broader regional patterns
+  #   - h3_cell_id_local (resolution 4): Smaller cells for local area patterns
+  # This dual-resolution approach captures both regional and local spatial context.
+  # Set to null/omit to disable H3 geo embeddings.
+  # Requires: pip install h3
+  # Note: The h3_resolution config option is now ignored; dual resolution (3 and 4) is always used.
+
+prediction:
+  mode: load
+  model_load_path: model_checkpoints/sentinel_model_trained_from_scratch.pt
+  model_save_path: model_checkpoints/sentinel_model_finetuned.pt  # Relative to base_output_dir
+  batch_size: 1000  # Optimized from profiling: batch_size=500 provides 2333 samples/s throughput with 13.7GB free GPU memory
+  gpu_max_rows: 1000000  # Increased to allow GPU usage for larger datasets
+  memory_limit_mb: 32000
+  # Retraining/finetune controls (used by time_series step B: --time-series-step finetune_predict)
+  retraining:
+    enabled: true
+    epochs: 100
+    patience: 20
+    samples_per_class: 1000  # Keep lowest N confidence predictions per class (tree, urban, grass) for balanced labeling
+    kill_other_gpu_python_processes: true
+    kill_other_gpu_python_processes_grace_seconds: 8
+    enable_gpu_monitoring: true  # Enable background nvidia-smi monitoring (logs to logs/gpu_monitor_*.log)
+    gpu_monitor_interval: 5  # Update interval in seconds
+
+training:
+  # Training from scratch configuration
+  # input_gpkg: Path to combined label file (use combine_labels.py script to merge multiple files)
+  # Example: data/training/combined_labels.gpkg
+  input_gpkg: data/training/combined_labels.gpkg
+  model_output_path: model_checkpoints/sentinel_model_trained_from_scratch.pt
+  # Training hyperparameters (can be overridden via training.py defaults)
+  epochs: 100
+  patience: 20
+  batch_size: 1000
+  learning_rate: 0.001
+
+vitality:
+  # Autoencoder-based vitality analysis parameters
+  # epochs: Number of training epochs per cluster (default: 8)
+  epochs: 8
+  # severe_morbidity_percentile: Percentile threshold for severe morbidity classification (default: 0.95, i.e., top 5%)
+  # Higher values (e.g., 0.98) result in fewer severe morbidity pixels
+  # Lower values (e.g., 0.90) result in more severe morbidity pixels
+  severe_morbidity_percentile: 0.97
+  # medium_morbidity_percentile: Percentile threshold for medium morbidity classification (default: 0.85, i.e., 85th percentile)
+  # Together with severe_morbidity_percentile (0.95), this creates a 10% range for medium morbidity (between 85th-95th percentile)
+  # Higher values result in fewer medium morbidity pixels
+  medium_morbidity_percentile: 0.95
+  # Default bands for Dual-Head Attention:
+  # - Spatial Head (The "Eye"): NDVI, B08 - maintains structural integrity
+  # - Spectral Head (The "Lab"): B05, B11, B12 - understands spectral coherence
+  # Note: NDVI is automatically added if not in list, B02-B04 provide additional spatial texture
+  feature_bands: ["B02", "B03", "B04", "B05", "B08", "B11", "B12"]
+
+logging:
+  log_level: INFO
+

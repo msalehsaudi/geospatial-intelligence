@@ -1,0 +1,21 @@
+directories:
+  base_output_dir: ""
+  raw_data: raw_data
+  processed_data: processed_data
+  asset_preparation: asset_preparation
+  segmentation: segmentation
+  predictions: predictions
+  logs: logs
+
+input:
+  aoi: "data/aoi/bayernwerk_eon_one_100_buffer.geojson"
+  buffer_distance: 200
+  segment_length: 50
+
+sentinel_aws:
+  bands: ["B02", "B03", "B04", "B05", "B06", "B08", "B11", "B12"]
+  max_cloud_cover: 10
+  time_range: "2023-01-01/2024-12-31"
+
+vitality:
+  feature_bands: ["B02", "B03", "B04", "B05", "B08", "B11", "B12"]

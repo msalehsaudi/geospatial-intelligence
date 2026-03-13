@@ -1,0 +1,23 @@
+# Training configuration for training from scratch
+# This config is used with: python -m treelance_sentinel.training --config configs/training_from_scratch.yaml
+
+training:
+  # Path to combined label file (combine your two label files first using combine_labels.py)
+  # Replace with your actual combined file path
+  input_gpkg: data/training/combined_labels.gpkg
+  
+  # Where to save the trained model
+  model_output_path: model_checkpoints/sentinel_model_trained_from_scratch.pt
+  
+  # Training options
+  apply_smote: true          # Apply SMOTE for class imbalance
+  apply_scaling: true        # Standardize features
+  use_class_weights: false   # Use balanced class weights
+  run_cross_validation: true # Run cross-validation
+
+# Note: The training script will automatically:
+# - Convert GPKG to Parquet for efficiency
+# - Extract features (zonal stats + H3 geo embeddings if enabled)
+# - Split data into train/validation/test sets
+# - Train DeepUNet classifier with attention module
+# - Save model checkpoint with scaler

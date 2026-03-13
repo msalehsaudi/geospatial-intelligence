@@ -1,0 +1,44 @@
+#
+# E2E Test Config for band consistency verification
+#
+
+directories:
+  base_output_dir: "local_output/bayernwerk_eon_one_100"
+  raw_data: raw_data
+  processed_data: processed_data
+  asset_preparation: asset_preparation
+  segmentation: segmentation
+  predictions: predictions
+  logs: logs
+
+input:
+  aoi: data/aoi/bayernwerk_eon_one_100.geojson
+  buffer_distance: 200
+  segment_length: 50
+
+sentinel_aws:
+  time_range: "2023-01-01/2024-12-31"
+  bands: ["B02", "B03", "B04", "B05", "B06", "B08", "B11", "B12"]
+  max_cloud_cover: 10
+  pick_lowest_cloud: true
+  clip_to_aoi: true
+
+processing:
+  redo: false
+  clear_cache: false
+  tile_size: 512
+  overlap: 0.1
+  num_workers: 4
+
+prediction:
+  # Model checkpoint path (required for prediction step)
+  # For time_series mode with all_vitality, prediction step is included
+  # If you want to skip prediction, use --time-series-step confidence_vitality instead
+  model_load_path: ""  # Set to actual model path if prediction step is needed
+
+vitality:
+  # Default bands for Dual-Head Attention:
+  # - Spatial Head (The "Eye"): NDVI, B08 - maintains structural integrity
+  # - Spectral Head (The "Lab"): B05, B11, B12 - understands spectral coherence
+  # Note: NDVI is automatically added if not in list, B02-B04 provide additional spatial texture
+  feature_bands: ["B02", "B03", "B04", "B05", "B08", "B11", "B12"]
